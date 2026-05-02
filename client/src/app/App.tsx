@@ -1,12 +1,17 @@
 import { Suspense, lazy } from 'react';
-import { Routes, Route } from 'react-router';
+import { Routes, Route, Navigate } from 'react-router';
 import { CircularProgress, Box } from '@mui/material';
 
 const Login = lazy(() => import('../pages/login'));
 const PrivateRoute = lazy(() => import('../features/auth/PrivateRoute'));
 const Users = lazy(() => import('../pages/user'));
 const AgentChat = lazy(() => import('../pages/agent'));
-const AgentWorkspace = lazy(() => import('../pages/agent/WorkspacePage'));
+const AgentSettingsLayout = lazy(() => import('../pages/agent/SettingsLayoutPage'));
+const AgentWorkspaceFiles = lazy(() => import('../pages/agent/WorkspaceFilesPage'));
+const AgentUsage = lazy(() => import('../pages/agent/UsagePage'));
+const AgentBudgets = lazy(() => import('../pages/agent/BudgetsPage'));
+const AgentSkills = lazy(() => import('../pages/agent/SkillsPage'));
+const AgentSubagents = lazy(() => import('../pages/agent/SubagentsPage'));
 const Plugins = lazy(() => import('../pages/plugins'));
 const Skills = lazy(() => import('../pages/skills'));
 const Channels = lazy(() => import('../pages/channels'));
@@ -88,13 +93,55 @@ function App() {
           }
         />
         <Route
-          path="agent/:agentId/workspace"
+          path="agent/:agentId"
           element={
             <Suspense fallback={<Loading />}>
-              <AgentWorkspace />
+              <AgentSettingsLayout />
             </Suspense>
           }
-        />
+        >
+          <Route index element={<Navigate to="workspace" replace />} />
+          <Route
+            path="workspace"
+            element={
+              <Suspense fallback={<Loading />}>
+                <AgentWorkspaceFiles />
+              </Suspense>
+            }
+          />
+          <Route
+            path="usage"
+            element={
+              <Suspense fallback={<Loading />}>
+                <AgentUsage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="budgets"
+            element={
+              <Suspense fallback={<Loading />}>
+                <AgentBudgets />
+              </Suspense>
+            }
+          />
+          <Route
+            path="skills"
+            element={
+              <Suspense fallback={<Loading />}>
+                <AgentSkills />
+              </Suspense>
+            }
+          />
+          <Route
+            path="subagents"
+            element={
+              <Suspense fallback={<Loading />}>
+                <AgentSubagents />
+              </Suspense>
+            }
+          />
+        </Route>
         <Route path="*" element="404" />
       </Route>
     </Routes>

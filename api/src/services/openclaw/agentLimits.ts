@@ -7,7 +7,11 @@ import {
 } from '../../@types/openclaw';
 import AppDataSource from '../../data-source';
 import { Agent } from '../../entities';
-import { fetchUsagePayload, invalidateAgentUsageCache, type RawSessionUsage } from './agentUsage';
+import { type RawSessionUsage } from './agentUsage';
+import { getAgentRawUsageFromDisk, invalidateLocalUsageCache } from './localUsage';
+
+const RESPONSE_TTL_MS = 3000;
+const responseCache = new Map<string, { at: number; data: AgentLimitsResponse }>();
 
 function isoDate(d: Date): string {
   const y = d.getFullYear();
@@ -70,7 +74,15 @@ function buildWindow(limit: number | null, spent: number): AgentLimitWindowState
 }
 
 export async function getAgentLimits(agent: Agent): Promise<AgentLimitsResponse> {
-  const payload = await fetchUsagePayload({ force: true });
+  const cacheKey = `${agent._id}|${agent.costLimitDaily ?? 'x'}|${agent.costLimitMonthly ?? 'x'}|${
+    agent.costLimitTotal ?? 'x'
+  }`;
+  const cached = responseCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < RESPONSE_TTL_MS) {
+    return cached.data;
+  }
+
+  const payload = await getAgentRawUsageFromDisk(agent.openclawAgentId);
   const sessions = (payload?.sessions ?? []).filter((s) => s?.agentId === agent.openclawAgentId);
   const usages = sessions
     .map((s) => s.usage)
@@ -78,7 +90,7 @@ export async function getAgentLimits(agent: Agent): Promise<AgentLimitsResponse>
 
   const spend = spendForAgent(usages);
 
-  return {
+  const response: AgentLimitsResponse = {
     agentId: agent.openclawAgentId,
     today: spend.today,
     thisMonth: spend.thisMonth,
@@ -88,6 +100,8 @@ export async function getAgentLimits(agent: Agent): Promise<AgentLimitsResponse>
       total: buildWindow(agent.costLimitTotal, spend.total),
     },
   };
+  responseCache.set(cacheKey, { at: Date.now(), data: response });
+  return response;
 }
 
 const COLUMN_BY_WINDOW: Record<
@@ -138,7 +152,8 @@ export async function setAgentLimits(
     await repo.update({ _id: agent._id }, { ...update, updatedAt: new Date() });
   }
 
-  invalidateAgentUsageCache();
+  invalidateLocalUsageCache();
+  responseCache.clear();
   const fresh = await repo.findOneByOrFail({ _id: agent._id });
   const config = await getAgentLimits(fresh);
   return { ok: true, config };

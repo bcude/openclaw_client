@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import {
   AgentUsageDailyPoint,
   AgentUsageLatency,
@@ -9,8 +8,7 @@ import {
   AgentUsageToolRow,
   AgentUsageTotals,
 } from '../../@types/openclaw';
-import { gateway } from '../openclawGateway';
-import { errMsg } from '../../utils/errors';
+import { getAgentRawUsageFromDisk } from './localUsage';
 
 interface RawDailyBreakdown {
   date?: string;
@@ -93,31 +91,6 @@ export interface RawUsagePayload {
 }
 
 export type { RawUsageSession, RawSessionUsage, RawDailyBreakdown };
-
-const CACHE_TTL_MS = 30 * 1000;
-let cachedPayload: { at: number; data: RawUsagePayload } | null = null;
-
-export interface FetchUsageOptions {
-  force?: boolean;
-}
-
-export async function fetchUsagePayload(
-  options: FetchUsageOptions = {}
-): Promise<RawUsagePayload | null> {
-  if (!options.force && cachedPayload && Date.now() - cachedPayload.at < CACHE_TTL_MS) {
-    return cachedPayload.data;
-  }
-  const ok = await gateway.ensureConnected();
-  if (!ok) return cachedPayload?.data ?? null;
-  try {
-    const data = await gateway.request<RawUsagePayload>('sessions.usage', {}, { timeoutMs: 15000 });
-    cachedPayload = { at: Date.now(), data };
-    return data;
-  } catch (err) {
-    console.warn('[agent-usage] sessions.usage failed:', errMsg(err));
-    return cachedPayload?.data ?? null;
-  }
-}
 
 function emptyResponse(openclawAgentId: string, known: boolean): AgentUsageResponse {
   return {
@@ -243,7 +216,7 @@ function aggregateLatency(rows: RawDailyLatency[]): AgentUsageLatency {
 }
 
 export async function getAgentUsage(openclawAgentId: string): Promise<AgentUsageResponse> {
-  const payload = await fetchUsagePayload();
+  const payload = await getAgentRawUsageFromDisk(openclawAgentId);
   if (!payload || !Array.isArray(payload.sessions)) {
     return emptyResponse(openclawAgentId, false);
   }
@@ -321,8 +294,4 @@ export async function getAgentUsage(openclawAgentId: string): Promise<AgentUsage
     tools,
     sessions: sessionRows,
   };
-}
-
-export function invalidateAgentUsageCache(): void {
-  cachedPayload = null;
 }

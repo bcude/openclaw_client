@@ -1,23 +1,25 @@
-import { useState, type ReactElement } from 'react';
-import { Link, useSearchParams } from 'react-router';
+import type { ReactElement } from 'react';
+import { Link, Outlet, useLocation, useSearchParams } from 'react-router';
 import { Box, IconButton, Typography, CircularProgress, Tab, Tabs } from '@mui/material';
 import { ArrowBack, Extension, FolderOpen, Group, Insights, Tune } from '@mui/icons-material';
 import { useGetAgentQuery } from '../../../entities/agent';
-import { AgentBudgets } from '../../../features/agent/budgets';
-import { AgentSkills } from '../../../features/agent/skills';
-import { AgentSubagents } from '../../../features/agent/subagents';
-import { AgentUsage } from '../../../features/agent/usage';
-import WorkspaceFileTabs from './WorkspaceFileTabs';
 
 interface WorkspaceProps {
   agentId: string;
 }
 
-type SectionId = 'files' | 'usage' | 'budgets' | 'skills' | 'subagents';
+type SectionId = 'workspace' | 'usage' | 'budgets' | 'skills' | 'subagents';
 
-const SECTIONS: { id: SectionId; label: string; icon: ReactElement; caption: string }[] = [
+interface SectionDef {
+  id: SectionId;
+  label: string;
+  icon: ReactElement;
+  caption: string;
+}
+
+const SECTIONS: SectionDef[] = [
   {
-    id: 'files',
+    id: 'workspace',
     label: 'Workspace',
     icon: <FolderOpen sx={{ fontSize: 18 }} />,
     caption: 'Workspace files',
@@ -48,14 +50,25 @@ const SECTIONS: { id: SectionId; label: string; icon: ReactElement; caption: str
   },
 ];
 
+function activeSectionFromPath(pathname: string): SectionId {
+  const last = pathname.split('/').filter(Boolean).pop() ?? '';
+  return SECTIONS.some((s) => s.id === last) ? (last as SectionId) : 'workspace';
+}
+
 export default function Workspace({ agentId }: WorkspaceProps) {
   const [searchParams] = useSearchParams();
   const returnConv = searchParams.get('return');
   const { data: agent, isLoading } = useGetAgentQuery(agentId, { skip: !agentId });
-  const [section, setSection] = useState<SectionId>('files');
+  const { pathname } = useLocation();
+  const section = activeSectionFromPath(pathname);
 
   const backHref = returnConv ? `/agent/${agentId}/chat/${returnConv}` : '/';
   const activeCaption = SECTIONS.find((s) => s.id === section)?.caption ?? '';
+
+  const tabHref = (id: SectionId): string => {
+    const base = `/agent/${agentId}/${id}`;
+    return returnConv ? `${base}?return=${returnConv}` : base;
+  };
 
   if (isLoading && !agent) {
     return (
@@ -121,7 +134,6 @@ export default function Workspace({ agentId }: WorkspaceProps) {
       >
         <Tabs
           value={section}
-          onChange={(_, v: SectionId) => setSection(v)}
           variant="scrollable"
           scrollButtons="auto"
           allowScrollButtonsMobile
@@ -137,7 +149,15 @@ export default function Workspace({ agentId }: WorkspaceProps) {
           }}
         >
           {SECTIONS.map((s) => (
-            <Tab key={s.id} value={s.id} iconPosition="start" icon={s.icon} label={s.label} />
+            <Tab
+              key={s.id}
+              value={s.id}
+              component={Link}
+              to={tabHref(s.id)}
+              iconPosition="start"
+              icon={s.icon}
+              label={s.label}
+            />
           ))}
         </Tabs>
       </Box>
@@ -151,11 +171,7 @@ export default function Workspace({ agentId }: WorkspaceProps) {
           py: 2,
         }}
       >
-        {section === 'files' && <WorkspaceFileTabs agentId={agentId} />}
-        {section === 'usage' && agent?._id && <AgentUsage agentId={String(agent._id)} />}
-        {section === 'budgets' && agent?._id && <AgentBudgets agentId={String(agent._id)} />}
-        {section === 'skills' && agent?._id && <AgentSkills agentId={String(agent._id)} />}
-        {section === 'subagents' && agent?._id && <AgentSubagents agentId={String(agent._id)} />}
+        <Outlet />
       </Box>
     </Box>
   );

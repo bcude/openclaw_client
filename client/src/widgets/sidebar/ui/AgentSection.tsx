@@ -10,14 +10,15 @@ import {
   IconButton,
   useTheme,
 } from '@mui/material';
-import { Add, ExpandMore, ExpandLess, SmartToy, DeleteOutline } from '@mui/icons-material';
+import { Add, ExpandMore, ExpandLess, DeleteOutline } from '@mui/icons-material';
 import { useLocation, useNavigate } from 'react-router';
 import { useDeleteAgentMutation } from '../../../entities/agent';
 import { useCreateConversationMutation, ConversationItem } from '../../../entities/conversation';
-import { DeleteButton, ProviderLogo } from '../../../shared/ui';
+import { DeleteButton } from '../../../shared/ui';
+import AgentSpendRing from './AgentSpendRing';
 
 interface AgentSectionProps {
-  agent: { _id: string; name: string; model?: string | null };
+  agent: { _id: string; name: string; model?: string | null; openclawAgentId?: string };
   conversations: { _id: string; title: string | null; createdAt: string }[];
   searchQuery?: string;
   collapseKey?: number;
@@ -104,12 +105,13 @@ export default function AgentSection({
           }}
         >
           <ListItemIcon
-            sx={{ minWidth: 24, color: isAgentActive ? sidebar.selectedBorder : sidebar.text }}
+            sx={{ minWidth: 34, color: isAgentActive ? sidebar.selectedBorder : sidebar.text }}
           >
-            <ProviderLogo
-              modelId={modelId}
-              size={16}
-              fallback={<SmartToy sx={{ fontSize: 16 }} />}
+            <AgentSpendRing
+              agentId={agent._id}
+              openclawAgentId={agent.openclawAgentId}
+              model={modelId}
+              size={26}
             />
           </ListItemIcon>
           <ListItemText

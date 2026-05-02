@@ -1,17 +1,16 @@
-import { useEffect, useMemo } from 'react';
-import { Box, CircularProgress, Stack, Tooltip, Typography } from '@mui/material';
+import { useMemo } from 'react';
+import { Box, CircularProgress, Divider, Stack, Tooltip, Typography } from '@mui/material';
 import { SmartToy } from '@mui/icons-material';
-import { Link } from 'react-router';
 import {
   useGetAgentLimitsQuery,
   type AgentLimitWindow,
   type AgentLimitWindowState,
-} from '../../../../entities/agent';
-import { ProviderLogo } from '../../../../shared/ui';
+} from '../../../entities/agent';
+import { ProviderLogo } from '../../../shared/ui';
 
-interface AgentUsageRingProps {
+interface AgentSpendRingProps {
   agentId: string;
-  conversationId?: string | number | null;
+  openclawAgentId?: string | null;
   model?: string | null;
   size?: number;
 }
@@ -40,21 +39,28 @@ function pickHotWindow(rows: WindowRow[]): WindowRow {
   return configured.reduce((acc, r) => ((r.state.ratio ?? 0) > (acc.state.ratio ?? 0) ? r : acc));
 }
 
-export default function AgentUsageRing({
+function prettyProvider(provider: string): string {
+  if (!provider) return '';
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+function splitModel(model: string | null | undefined): { provider: string; name: string } {
+  if (!model) return { provider: '', name: '' };
+  const slash = model.indexOf('/');
+  if (slash <= 0) return { provider: '', name: model };
+  return { provider: model.slice(0, slash), name: model.slice(slash + 1) };
+}
+
+export default function AgentSpendRing({
   agentId,
-  conversationId,
+  openclawAgentId,
   model,
-  size = 32,
-}: AgentUsageRingProps) {
-  const { data, refetch, isFetching } = useGetAgentLimitsQuery(agentId, {
+  size = 22,
+}: AgentSpendRingProps) {
+  const { data, isFetching } = useGetAgentLimitsQuery(agentId, {
     skip: !agentId,
     refetchOnMountOrArgChange: true,
   });
-
-  useEffect(() => {
-    if (!agentId) return;
-    refetch();
-  }, [agentId, conversationId, refetch]);
 
   const rows = useMemo<WindowRow[]>(() => {
     if (!data) return [];
@@ -65,36 +71,14 @@ export default function AgentUsageRing({
     ];
   }, [data]);
 
-  const ringThickness = Math.max(2.5, size / 11);
-  const innerLogoSize = Math.round(size * 0.62);
-  const usageHref = conversationId
-    ? `/agent/${agentId}/usage?return=${conversationId}`
-    : `/agent/${agentId}/usage`;
-
-  if (isFetching && !data) {
-    return (
-      <Box
-        sx={{
-          width: size,
-          height: size,
-          flexShrink: 0,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <CircularProgress size={size - 8} thickness={2} sx={{ color: 'text.disabled' }} />
-      </Box>
-    );
-  }
+  const { provider, name: modelName } = splitModel(model);
+  const innerLogoSize = Math.min(size - 8, 14);
+  const ringThickness = Math.max(3, size / 9);
 
   const hot = rows.length > 0 ? pickHotWindow(rows) : null;
-  const hasCap = !!hot && hot.state.limit != null;
+  const hasCap = hot?.state.limit != null;
   const colour = hot ? ratioColour(hot.state) : 'primary';
   const pct = !hot || hot.state.ratio == null ? 0 : Math.min(100, hot.state.ratio * 100);
-  const labelPct = hot?.state.exceeded
-    ? '100+'
-    : `${Math.round(hot?.state.ratio == null ? 0 : (hot.state.ratio ?? 0) * 100)}`;
 
   const popoverTitle = (
     <Box sx={{ minWidth: 220, py: 0.25, px: 0.5 }}>
@@ -112,7 +96,7 @@ export default function AgentUsageRing({
       </Typography>
       {rows.length === 0 ? (
         <Typography variant="caption" sx={{ fontSize: '0.72rem', color: 'text.secondary' }}>
-          No usage data yet.
+          {isFetching ? 'Loading…' : 'No usage data yet.'}
         </Typography>
       ) : (
         <Stack spacing={0.5}>
@@ -132,11 +116,7 @@ export default function AgentUsageRing({
               >
                 <Typography
                   variant="caption"
-                  sx={{
-                    fontSize: '0.72rem',
-                    color: 'text.secondary',
-                    fontWeight: 500,
-                  }}
+                  sx={{ fontSize: '0.72rem', color: 'text.secondary', fontWeight: 500 }}
                 >
                   {r.label}
                 </Typography>
@@ -166,18 +146,39 @@ export default function AgentUsageRing({
           })}
         </Stack>
       )}
-      <Typography
-        variant="caption"
-        sx={{
-          display: 'block',
-          mt: 0.75,
-          fontSize: '0.68rem',
-          color: 'text.disabled',
-          fontStyle: 'italic',
-        }}
-      >
-        Click to open usage details.
-      </Typography>
+
+      {(provider || modelName || openclawAgentId) && (
+        <>
+          <Divider sx={{ my: 0.75, opacity: 0.6 }} />
+          <Stack spacing={0.25}>
+            {(provider || modelName) && (
+              <Typography
+                variant="caption"
+                sx={{
+                  fontSize: '0.7rem',
+                  color: 'text.secondary',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                }}
+              >
+                {provider ? prettyProvider(provider) : 'Model'}
+                {modelName ? ` · ${modelName}` : ''}
+              </Typography>
+            )}
+            {openclawAgentId && (
+              <Typography
+                variant="caption"
+                sx={{
+                  fontSize: '0.7rem',
+                  color: 'text.disabled',
+                  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                }}
+              >
+                agent · {openclawAgentId}
+              </Typography>
+            )}
+          </Stack>
+        </>
+      )}
     </Box>
   );
 
@@ -203,18 +204,12 @@ export default function AgentUsageRing({
         arrow: {
           sx: {
             color: 'background.paper',
-            '&::before': {
-              border: '1px solid',
-              borderColor: 'divider',
-            },
+            '&::before': { border: '1px solid', borderColor: 'divider' },
           },
         },
       }}
     >
       <Box
-        component={Link}
-        to={usageHref}
-        aria-label="Open agent usage details"
         sx={{
           position: 'relative',
           width: size,
@@ -223,15 +218,7 @@ export default function AgentUsageRing({
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          userSelect: 'none',
-          textDecoration: 'none',
-          color: 'inherit',
-          cursor: 'pointer',
-          borderRadius: '50%',
-          transition: 'transform 0.15s ease',
-          '&:hover': {
-            transform: 'scale(1.06)',
-          },
+          cursor: 'default',
         }}
       >
         <CircularProgress
@@ -259,49 +246,23 @@ export default function AgentUsageRing({
             }}
           />
         )}
-        {hasCap ? (
-          <Typography
-            variant="caption"
-            sx={{
-              position: 'relative',
-              zIndex: 1,
-              fontSize: size <= 28 ? '0.6rem' : '0.65rem',
-              fontWeight: 700,
-              fontVariantNumeric: 'tabular-nums',
-              lineHeight: 1,
-              color: hot?.state.exceeded
-                ? 'error.main'
-                : hot?.state.nearLimit
-                  ? 'warning.main'
-                  : 'text.secondary',
-            }}
-          >
-            {labelPct}
-            {!hot?.state.exceeded && (
-              <Box component="span" sx={{ fontSize: '0.55em', ml: 0.1 }}>
-                %
-              </Box>
-            )}
-          </Typography>
-        ) : (
-          <Box
-            sx={{
-              position: 'relative',
-              zIndex: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: innerLogoSize,
-              height: innerLogoSize,
-            }}
-          >
-            <ProviderLogo
-              modelId={model ?? null}
-              size={innerLogoSize}
-              fallback={<SmartToy sx={{ fontSize: innerLogoSize }} />}
-            />
-          </Box>
-        )}
+        <Box
+          sx={{
+            position: 'relative',
+            zIndex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: innerLogoSize,
+            height: innerLogoSize,
+          }}
+        >
+          <ProviderLogo
+            modelId={model ?? null}
+            size={innerLogoSize}
+            fallback={<SmartToy sx={{ fontSize: innerLogoSize }} />}
+          />
+        </Box>
       </Box>
     </Tooltip>
   );

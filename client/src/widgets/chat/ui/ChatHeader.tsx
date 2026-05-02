@@ -105,7 +105,11 @@ export default function ChatHeader({
         </>
       ) : (
         <>
-          <AgentUsageRing agentId={agentId} conversationId={conversationId} />
+          <AgentUsageRing
+            agentId={agentId}
+            conversationId={conversationId}
+            model={agent.model ?? null}
+          />
           <Stack sx={{ flex: 1, minWidth: 0 }} spacing={0.25}>
             <Typography
               variant="h6"
