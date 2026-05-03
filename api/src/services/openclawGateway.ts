@@ -27,6 +27,20 @@ import { errMsg, execErrText } from '../utils/errors';
 
 const OPENCLAW_HOME = process.env.OPENCLAW_HOME || path.join(os.homedir(), '.openclaw');
 
+/* Heartbeat — detects wedged sockets the kernel hasn't FIN-closed yet (gateway
+ * killed -9, OOM-killed, host crash, NAT timeout). The `ws` library doesn't
+ * surface dead peers on its own, so we ping when traffic goes idle and force a
+ * `terminate()` if no pong/data comes back within the dead-window. The dead
+ * timer firing → `close` event → `_scheduleReconnect()` recovers automatically. */
+const HEARTBEAT_CHECK_MS = 5_000; // tick frequency of the liveness watcher
+const HEARTBEAT_IDLE_PING_MS = 15_000; // no traffic for this long → send ws ping
+const HEARTBEAT_DEAD_MS = 30_000; // no traffic for this long → declare dead
+
+/* Reconnect backoff — capped exponential with jitter so a flapping gateway
+ * doesn't get hammered by a tight 5s loop from every client process. */
+const RECONNECT_BASE_MS = 1_000;
+const RECONNECT_CAP_MS = 30_000;
+
 function base64UrlEncode(buf: Buffer): string {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
@@ -83,6 +97,17 @@ export class GatewayClient {
 
   connectPromise: Promise<boolean> | null = null;
 
+  /** Liveness watcher; `null` between connections. */
+  heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Wall-clock ms of the last byte received on the current socket (any
+   *  inbound message OR a pong). The heartbeat compares against this. */
+  lastSeenAt = 0;
+
+  /** Successive reconnect attempts since the last successful auth. Reset to
+   *  zero on auth-success so transient blips don't push us into the cap. */
+  reconnectAttempts = 0;
+
   async ensureConnected(): Promise<boolean> {
     if (this.ws?.readyState === WsWebSocket.OPEN && this.authenticated) return true;
     if (this.connectPromise) return this.connectPromise;
@@ -112,13 +137,33 @@ export class GatewayClient {
 
       const timeout = setTimeout(() => {
         console.warn('[gateway] connect timeout');
-        ws.close();
+        /* `terminate()` (vs `close()`) is forceful: it skips the close
+         * handshake and synchronously fires the close event, so a hung
+         * handshake doesn't block reconnect. */
+        try {
+          ws.terminate();
+        } catch {
+          /* idempotent */
+        }
         resolve(false);
       }, 10000);
 
-      ws.on('open', () => console.log('[gateway] ws open'));
+      const markAlive = (): void => {
+        this.lastSeenAt = Date.now();
+      };
+
+      ws.on('open', () => {
+        markAlive();
+        console.log('[gateway] ws open');
+      });
+
+      /* Pongs from the server arrive as a `ws`-level frame, NOT as an
+       * inbound message — track them separately to keep the liveness
+       * window accurate during an idle period with no app traffic. */
+      ws.on('pong', markAlive);
 
       ws.on('message', (data: Buffer) => {
+        markAlive();
         let msg: GwInboundMessage;
         try {
           msg = JSON.parse(data.toString()) as GwInboundMessage;
@@ -184,6 +229,8 @@ export class GatewayClient {
         if (isResponseMessage(msg)) {
           if (!this.authenticated && msg.ok) {
             this.authenticated = true;
+            this.reconnectAttempts = 0;
+            this._startHeartbeat();
             clearTimeout(timeout);
             console.log('[gateway] authenticated');
             resolve(true);
@@ -221,26 +268,98 @@ export class GatewayClient {
         console.log('[gateway] disconnected');
         this.authenticated = false;
         this.ws = null;
+        this._stopHeartbeat();
+        /* Reject every queued request synchronously so callers fail fast
+         * instead of waiting for their per-request timeout (default 120s). */
         this.pending.forEach((p) => p.reject(new Error('gateway disconnected')));
         this.pending.clear();
         this.eventListeners.clear();
         clearTimeout(timeout);
-        if (!this.connectPromise) resolve(false);
+        /* Always resolve the connect promise so a failed handshake unblocks
+         * any awaiting `ensureConnected()` callers. `resolve` is idempotent
+         * — if auth already resolved with `true`, this is a no-op. Without
+         * this, a reconnect that hits ECONNREFUSED leaves `connectPromise`
+         * pending forever, and every future `ensureConnected()` returns the
+         * dead promise instead of starting a fresh attempt. */
+        resolve(false);
         this._scheduleReconnect();
       });
 
       ws.on('error', (err: Error) => {
         console.error('[gateway] ws error:', err.message);
+        /* Errors don't always escalate to a clean close (esp. during
+         * handshake or when the peer dropped the connection abruptly).
+         * Force-terminate so the close handler runs and reconnect kicks in. */
+        try {
+          ws.terminate();
+        } catch {
+          /* idempotent */
+        }
       });
     });
   }
 
+  /** Start the WS-level liveness watcher. Called immediately after auth. */
+  _startHeartbeat(): void {
+    this._stopHeartbeat();
+    this.lastSeenAt = Date.now();
+    const timer = setInterval(() => {
+      const { ws } = this;
+      if (!ws || ws.readyState !== WsWebSocket.OPEN) return;
+      const idle = Date.now() - this.lastSeenAt;
+      if (idle > HEARTBEAT_DEAD_MS) {
+        console.warn(
+          `[gateway] no traffic for ${idle}ms — terminating stale socket and reconnecting`
+        );
+        try {
+          ws.terminate();
+        } catch {
+          /* idempotent */
+        }
+        return;
+      }
+      if (idle > HEARTBEAT_IDLE_PING_MS) {
+        try {
+          /* RFC 6455 ping; the server's `ws` lib auto-pongs. The pong
+           * handler above bumps `lastSeenAt` so we know the peer is alive. */
+          ws.ping();
+        } catch {
+          /* swallow — the next tick will catch a truly dead socket. */
+        }
+      }
+    }, HEARTBEAT_CHECK_MS);
+    /* Don't keep the process alive solely on the heartbeat. */
+    timer.unref?.();
+    this.heartbeatTimer = timer;
+  }
+
+  _stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
   _scheduleReconnect(): void {
     if (this.reconnectTimer) return;
-    this.reconnectTimer = setTimeout(() => {
+    /* Capped exponential backoff with 50–100% jitter. The cap is small (30s)
+     * because every queued caller is currently failing; we want to recover
+     * fast once the gateway is back, but not hammer it during boot. */
+    const expBase = Math.min(
+      RECONNECT_CAP_MS,
+      RECONNECT_BASE_MS * 2 ** Math.min(this.reconnectAttempts, 10)
+    );
+    const delay = Math.round(expBase * (0.5 + Math.random() * 0.5));
+    this.reconnectAttempts += 1;
+    console.log(
+      `[gateway] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`
+    );
+    const timer = setTimeout(() => {
       this.reconnectTimer = null;
       this.ensureConnected().catch(() => {});
-    }, 5000);
+    }, delay);
+    timer.unref?.();
+    this.reconnectTimer = timer;
   }
 
   request<T = unknown>(
