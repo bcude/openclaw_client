@@ -8,11 +8,35 @@ export interface MessageFile {
   url: string;
 }
 
+/** Provider-reported result of a single tool invocation. */
+export interface ToolStepOutput {
+  text: string;
+  isError: boolean;
+  status?: string | null;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  truncated?: boolean;
+}
+
+/**
+ * One tool invocation captured from the assistant's JSONL turn — the
+ * `toolCall` content part paired with its matching `toolResult` row. The
+ * UI renders these as collapsible "Tool call / Tool output" blocks beneath
+ * the thinking section so users can audit what the agent did.
+ */
+export interface ToolStep {
+  id: string;
+  name: string;
+  input: Record<string, unknown> | null;
+  output: ToolStepOutput | null;
+}
+
 export interface Message {
   _id: string;
   conversationId: string;
   text: string;
   thinking: string | null;
+  toolSteps?: ToolStep[] | null;
   files: MessageFile[];
   role: 'user' | 'assistant';
   createdAt: string;
@@ -29,9 +53,24 @@ export interface MessagesQueryArg {
   before?: string;
 }
 
+/**
+ * Run-state surfaced from `sessions.json` on each poll. When `aborted` is
+ * true the OpenClaw daemon ended the last run abnormally (idle timeout,
+ * error, manual cancel) and the agent's reply was streamed only — never
+ * committed to the JSONL. The UI shows a banner explaining this so the
+ * apparent gap doesn't look like a sync failure.
+ */
+export interface SessionRunStatus {
+  aborted: boolean;
+  status: string | null;
+  reason: string | null;
+  endedAt: number | null;
+}
+
 export interface PollResponse {
   items: Message[];
   synced: number;
+  runStatus: SessionRunStatus | null;
 }
 
 export interface PollQueryArg {

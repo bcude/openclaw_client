@@ -14,6 +14,7 @@ export {
   deleteSession,
   deleteSessionMessage,
   extractThinkingFromJsonl,
+  getSessionRunStatus,
   getSessionSettingsInternal,
 } from './sessions';
 export { runChat } from './chat';

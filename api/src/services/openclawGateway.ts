@@ -400,6 +400,39 @@ export class GatewayClient {
   offEvent(key: string): void {
     this.eventListeners.delete(key);
   }
+
+  /**
+   * Cheap snapshot of the connection's current health, surfaced through
+   * `/api/gateway/status` for the chat UI's status dot. `connected` means
+   * the socket is OPEN and post-auth; `connecting` covers both initial
+   * handshake and reconnect attempts; `disconnected` is everything else.
+   */
+  getStatus(): {
+    state: 'connected' | 'connecting' | 'disconnected';
+    lastSeenAt: number;
+    reconnectAttempts: number;
+    hasCredentials: boolean;
+  } {
+    const hasCredentials = Boolean(this.credentials || loadGatewayCredentials());
+    if (this.ws?.readyState === WsWebSocket.OPEN && this.authenticated) {
+      return {
+        state: 'connected',
+        lastSeenAt: this.lastSeenAt,
+        reconnectAttempts: 0,
+        hasCredentials,
+      };
+    }
+    const connecting =
+      this.ws?.readyState === WsWebSocket.CONNECTING ||
+      Boolean(this.connectPromise) ||
+      (this.ws?.readyState === WsWebSocket.OPEN && !this.authenticated);
+    return {
+      state: connecting ? 'connecting' : 'disconnected',
+      lastSeenAt: this.lastSeenAt,
+      reconnectAttempts: this.reconnectAttempts,
+      hasCredentials,
+    };
+  }
 }
 
 export const gateway = new GatewayClient();

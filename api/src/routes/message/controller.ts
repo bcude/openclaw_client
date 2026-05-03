@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { RequestHandler } from 'express';
-import { LessThan, IsNull, MoreThan, FindOptionsWhere } from 'typeorm';
+import { LessThan, IsNull, In, MoreThan, FindOptionsWhere } from 'typeorm';
 import AppDataSource from '../../data-source';
 import { Message, Conversation, Agent } from '../../entities';
 import {
@@ -217,13 +217,18 @@ const chat: Chat = async (req, res, next) => {
           const assistantThinking = lastAssistantJsonl.thinking
             ? stripWrapperTags(lastAssistantJsonl.thinking).trim()
             : null;
+          const assistantToolSteps = lastAssistantJsonl.toolSteps ?? null;
 
-          if (assistantText || assistantThinking) {
+          /* Persist if we got any signal: real text, thinking, or tool calls
+           * — the last produces a compact tool-stub bubble in the UI. */
+          if (assistantText || assistantThinking || (assistantToolSteps && assistantToolSteps.length > 0)) {
             const assistantMessage = msgRepo.create({
               conversationId: Number(conversationId),
               externalId: lastAssistantJsonl.externalId || null,
-              text: assistantText || '...',
+              text: assistantText,
               thinking: assistantThinking || null,
+              toolSteps:
+                assistantToolSteps && assistantToolSteps.length > 0 ? assistantToolSteps : null,
               role: 'assistant' as const,
               createdBy: req.user!._id,
               createdAt: new Date(),
@@ -283,13 +288,17 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
 
     const conv = await convRepo.findOneBy({ _id: convId });
     if (!conv?.sessionKey) {
-      return res.json({ items: [], synced: 0 });
+      return res.json({ items: [], synced: 0, runStatus: null });
     }
 
     const agent = await agentRepo.findOneBy({ _id: conv.agentId });
     if (!agent?.openclawAgentId) {
-      return res.json({ items: [], synced: 0 });
+      return res.json({ items: [], synced: 0, runStatus: null });
     }
+
+    /* Run state surfaced to the UI so it can show a banner when the daemon
+     * aborted the last run (model idle timeout, error, user cancel). */
+    const runStatus = ocService.getSessionRunStatus(agent.openclawAgentId, conv.sessionKey);
 
     let synced = 0;
     const jsonlMessages = ocService
@@ -356,20 +365,47 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
       });
 
       const toInsert: typeof candidates = [];
-      const updates: Array<{ id: number; externalId: string }> = [];
+      const updates: Array<{
+        id: number;
+        externalId: string;
+        thinking: string | null;
+        toolSteps: NonNullable<(typeof candidates)[number]['toolSteps']> | null;
+      }> = [];
 
       candidates.forEach((m) => {
         const pool = unlinkedByRole.get(m.role);
         if (pool && pool.length > 0) {
           const match = pool.shift()!;
-          updates.push({ id: match._id, externalId: m.externalId! });
+          /* The chat handler may have saved this row pre-stream-completion,
+           * before any toolResult had landed in JSONL. We carry the live
+           * toolSteps + thinking through the link so the row picks up
+           * whatever the JSONL has now (including populated tool outputs). */
+          updates.push({
+            id: match._id,
+            externalId: m.externalId!,
+            thinking: m.thinking || null,
+            toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
+          });
         } else {
           toInsert.push(m);
         }
       });
 
       if (updates.length) {
-        await Promise.all(updates.map((u) => msgRepo.update(u.id, { externalId: u.externalId })));
+        await Promise.all(
+          updates.map((u) => {
+            /* TypeORM's update() type widens to _QueryDeepPartialEntity,
+             * which doesn't model arbitrary `Record<string, unknown>` shapes
+             * inside ToolStep.input. The runtime contract is just
+             * "JSON-serialisable patch", so the cast is safe. */
+            const patch = {
+              externalId: u.externalId,
+              thinking: u.thinking,
+              toolSteps: u.toolSteps,
+            } as unknown as Parameters<typeof msgRepo.update>[1];
+            return msgRepo.update(u.id, patch);
+          })
+        );
         synced += updates.length;
       }
 
@@ -381,6 +417,7 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
               externalId: m.externalId,
               text: m.text,
               thinking: m.thinking || null,
+              toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
               files: [],
               role: m.role as 'user' | 'assistant',
               createdBy: req.user!._id,
@@ -389,6 +426,50 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
           )
         );
         synced += toInsert.length;
+      }
+
+      /* Refresh tool steps on already-linked assistant rows. A long-running
+       * tool finishes AFTER its parent assistant turn was first synced, so
+       * the toolResult lands in JSONL on a later poll. Without this pass,
+       * the row keeps `output: null` forever and the UI shows "(no result
+       * captured)". We compare canonical JSON to skip no-op writes. */
+      const liveAssistantSteps = jsonlMessages.filter(
+        (m) => m.role === 'assistant' && m.toolSteps && m.toolSteps.length > 0
+      );
+      if (liveAssistantSteps.length) {
+        const liveIds = liveAssistantSteps.map((m) => m.externalId!).filter(Boolean);
+        if (liveIds.length) {
+          const existing = await msgRepo.find({
+            where: {
+              conversationId: convId,
+              role: 'assistant',
+              externalId: In(liveIds),
+            },
+            select: ['_id', 'externalId', 'toolSteps'],
+          });
+          const dbByExt = new Map(existing.map((m) => [m.externalId!, m]));
+          const refreshes: Array<{ id: number; toolSteps: typeof liveAssistantSteps[number]['toolSteps'] }> = [];
+          liveAssistantSteps.forEach((m) => {
+            const row = dbByExt.get(m.externalId!);
+            if (!row) return;
+            const liveJson = JSON.stringify(m.toolSteps ?? null);
+            const dbJson = JSON.stringify(row.toolSteps ?? null);
+            if (liveJson !== dbJson) {
+              refreshes.push({ id: row._id, toolSteps: m.toolSteps });
+            }
+          });
+          if (refreshes.length) {
+            await Promise.all(
+              refreshes.map((r) => {
+                const patch = { toolSteps: r.toolSteps } as unknown as Parameters<
+                  typeof msgRepo.update
+                >[1];
+                return msgRepo.update(r.id, patch);
+              })
+            );
+            synced += refreshes.length;
+          }
+        }
       }
     }
 
@@ -403,7 +484,7 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
       take: 200,
     });
 
-    return res.json({ items, synced });
+    return res.json({ items, synced, runStatus });
   } catch (error) {
     return next(error);
   }

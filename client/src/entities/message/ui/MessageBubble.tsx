@@ -1,24 +1,32 @@
 import { useState, memo, useCallback } from 'react';
-import { Box, Paper, Typography, IconButton, useTheme } from '@mui/material';
-import { DeleteOutline, ContentCopy, Done } from '@mui/icons-material';
+import { Box, Paper, Stack, Tooltip, Typography, IconButton, useTheme } from '@mui/material';
+import { DeleteOutline, ContentCopy, Done, ErrorOutline } from '@mui/icons-material';
 import { DeleteButton, MarkdownContent } from '../../../shared/ui';
 import ThinkingBlock from './ThinkingBlock';
+import ToolStepsBlock from './ToolStepsBlock';
 import FileAttachments from './FileAttachments';
 import CronMessageBubble from './CronMessageBubble';
 import ChannelMetadataHeader from './ChannelMetadataHeader';
 import { parseCronMessage } from '../lib/parseCronMessage';
 import { parseChannelMetadata } from '../lib/parseChannelMetadata';
-import { useDeleteMessageMutation, type Message, type MessageFile } from '../api';
+import { useDeleteMessageMutation, type Message, type MessageFile, type ToolStep } from '../api';
 
 export type MessageLike =
   | Message
-  | { text: string; role: string; thinking?: string | null; files?: MessageFile[] };
+  | {
+      text: string;
+      role: string;
+      thinking?: string | null;
+      files?: MessageFile[];
+      toolSteps?: ToolStep[] | null;
+    };
 
 interface MessageBubbleProps {
   message: MessageLike;
   isStreaming?: boolean;
   thinkingText?: string;
   messageId?: string;
+  deliveryError?: string | null;
 }
 
 const MessageBubble = memo(function MessageBubble({
@@ -26,6 +34,7 @@ const MessageBubble = memo(function MessageBubble({
   isStreaming,
   thinkingText,
   messageId,
+  deliveryError,
 }: MessageBubbleProps) {
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -35,6 +44,10 @@ const MessageBubble = memo(function MessageBubble({
   const isUser = message.role === 'user';
   const thinking = thinkingText || ('thinking' in message ? message.thinking : null);
   const files = ('files' in message ? message.files : undefined) ?? [];
+  const toolSteps =
+    !isUser && 'toolSteps' in message && Array.isArray(message.toolSteps)
+      ? (message.toolSteps as ToolStep[])
+      : [];
   const parsedCron = isUser && !isStreaming ? parseCronMessage(message.text) : null;
   const parsedChannel =
     isUser && !isStreaming && !parsedCron ? parseChannelMetadata(message.text) : null;
@@ -55,7 +68,38 @@ const MessageBubble = memo(function MessageBubble({
 
   if (parsedCron) {
     return (
-      <CronMessageBubble message={message as Message} messageId={messageId} parsed={parsedCron} />
+      <CronMessageBubble
+        message={message as Message}
+        messageId={messageId}
+        parsed={parsedCron}
+        deliveryError={deliveryError}
+      />
+    );
+  }
+
+  if (!isUser && !hasTextContent && !thinking && toolSteps.length > 0 && !isStreaming) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'flex-start',
+          mb: 1.5,
+          width: '100%',
+          maxWidth: { xs: '90%', sm: '80%', md: 'min(70%, 100%)' },
+        }}
+      >
+        <ToolStepsBlock steps={toolSteps} asStandalone />
+        {'createdAt' in message && (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            sx={{ opacity: 0.6, mt: 0.5, fontSize: '0.65rem' }}
+          >
+            {new Date((message as Message).createdAt).toLocaleTimeString()}
+          </Typography>
+        )}
+      </Box>
     );
   }
 
@@ -133,6 +177,7 @@ const MessageBubble = memo(function MessageBubble({
           ) : (
             <MarkdownContent isStreaming={isStreaming}>{displayText}</MarkdownContent>
           ))}
+        {!isUser && toolSteps.length > 0 && <ToolStepsBlock steps={toolSteps} />}
         {isStreaming && !hasTextContent && (
           <Box
             component="span"
@@ -146,10 +191,31 @@ const MessageBubble = memo(function MessageBubble({
             }}
           />
         )}
-        {'createdAt' in message && (
-          <Typography variant="caption" sx={{ opacity: 0.7 }}>
-            {new Date(message.createdAt).toLocaleTimeString()}
-          </Typography>
+        {('createdAt' in message || deliveryError) && (
+          <Stack
+            direction="row"
+            spacing={0.5}
+            alignItems="center"
+            justifyContent={isUser ? 'flex-end' : 'flex-start'}
+            sx={{ mt: 0.25 }}
+          >
+            {deliveryError && (
+              <Tooltip title={deliveryError} arrow placement={isUser ? 'left' : 'right'}>
+                <ErrorOutline
+                  sx={{
+                    fontSize: 14,
+                    color: 'warning.main',
+                    cursor: 'help',
+                  }}
+                />
+              </Tooltip>
+            )}
+            {'createdAt' in message && (
+              <Typography variant="caption" sx={{ opacity: 0.7 }}>
+                {new Date(message.createdAt).toLocaleTimeString()}
+              </Typography>
+            )}
+          </Stack>
         )}
       </Paper>
     </Box>

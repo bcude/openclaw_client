@@ -6,6 +6,7 @@ import {
   usePollMessagesQuery,
   type Message,
   type MessagesResponse,
+  type SessionRunStatus,
 } from '../../../entities/message';
 import { useSendMessage } from '../../../features/message/send';
 import type { ChatState } from './types';
@@ -146,6 +147,15 @@ export function useChat(conversationId: string | undefined): ChatState {
     if (loadMoreCursor !== undefined) setLoadMoreCursor(undefined);
   }
 
+  /* Run state is derived directly from the latest poll. Polling is paused
+   * while streaming, so by definition this only updates between runs.
+   * The MessageList consumes it to flag the last "stuck" message inline
+   * (exclamation icon + tooltip) — no banner state, no dismissal needed,
+   * because the indicator clears naturally when a new assistant reply
+   * arrives after the affected message. */
+  const runStatus: SessionRunStatus | null =
+    pollData?.runStatus?.aborted ? pollData.runStatus : null;
+
   useEffect(() => {
     return () => {
       abort();
@@ -182,6 +192,7 @@ export function useChat(conversationId: string | undefined): ChatState {
     streamError,
     pendingUserText,
     pendingFilesPreviews,
+    runStatus,
     send,
     loadMore,
     handleScroll,

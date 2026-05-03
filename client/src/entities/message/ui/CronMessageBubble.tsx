@@ -1,6 +1,22 @@
 import { useState, memo, useCallback } from 'react';
-import { Box, Paper, Typography, IconButton, Chip, alpha, useTheme } from '@mui/material';
-import { DeleteOutline, ContentCopy, Done, ScheduleOutlined } from '@mui/icons-material';
+import {
+  Box,
+  Paper,
+  Stack,
+  Tooltip,
+  Typography,
+  IconButton,
+  Chip,
+  alpha,
+  useTheme,
+} from '@mui/material';
+import {
+  DeleteOutline,
+  ContentCopy,
+  Done,
+  ScheduleOutlined,
+  ErrorOutline,
+} from '@mui/icons-material';
 import { DeleteButton, MarkdownContent } from '../../../shared/ui';
 import { useDeleteMessageMutation, type Message } from '../api';
 import type { ParsedCronMessage } from '../lib/parseCronMessage';
@@ -9,12 +25,14 @@ interface CronMessageBubbleProps {
   message: Message | { text: string; role: string };
   messageId?: string;
   parsed: ParsedCronMessage;
+  deliveryError?: string | null;
 }
 
 const CronMessageBubble = memo(function CronMessageBubble({
   message,
   messageId,
   parsed,
+  deliveryError,
 }: CronMessageBubbleProps) {
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -121,13 +139,19 @@ const CronMessageBubble = memo(function CronMessageBubble({
           </Box>
         )}
 
-        {createdAt && (
-          <Typography
-            variant="caption"
-            sx={{ opacity: 0.6, display: 'block', mt: 0.5, fontSize: 10.5 }}
-          >
-            {new Date(createdAt).toLocaleTimeString()}
-          </Typography>
+        {(createdAt || deliveryError) && (
+          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }}>
+            {deliveryError && (
+              <Tooltip title={deliveryError} arrow placement="right">
+                <ErrorOutline sx={{ fontSize: 13, color: 'warning.main', cursor: 'help' }} />
+              </Tooltip>
+            )}
+            {createdAt && (
+              <Typography variant="caption" sx={{ opacity: 0.6, fontSize: 10.5 }}>
+                {new Date(createdAt).toLocaleTimeString()}
+              </Typography>
+            )}
+          </Stack>
         )}
       </Paper>
     </Box>

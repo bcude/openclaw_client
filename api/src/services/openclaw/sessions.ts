@@ -6,6 +6,7 @@ import {
   OpenClawMessage,
   OpenClawSession,
   SessionEntry,
+  SessionRunStatus,
   SessionSettings,
   SessionSettingsPatchBody,
   SessionsFile,
@@ -74,6 +75,39 @@ export function getSessionSettingsInternal(
     };
   } catch {
     return defaults;
+  }
+}
+
+/**
+ * Inspect `sessions.json` for the run state of one session.
+ *
+ * The OpenClaw daemon writes `status`, `abortedLastRun`, `abortReason`, and
+ * `endedAt` after each run. When `status === 'timeout'` (model idle timeout)
+ * or `abortedLastRun === true` (any other abnormal end) the assistant's
+ * partial reply was streamed to whatever client was connected but never
+ * committed to the JSONL — so we surface this so the chat UI can explain
+ * the gap to the user instead of silently showing a missing message.
+ */
+export function getSessionRunStatus(
+  agentId: string,
+  sessionKey: string
+): SessionRunStatus {
+  const empty: SessionRunStatus = { aborted: false, status: null, reason: null, endedAt: null };
+  try {
+    const sessions = readSessions(agentId);
+    if (!sessions) return empty;
+    const entry = findSessionEntry(sessions, agentId, sessionKey);
+    if (!entry) return empty;
+    const status = typeof entry.status === 'string' ? entry.status : null;
+    const aborted = entry.abortedLastRun === true || status === 'timeout' || status === 'error';
+    const reason =
+      (typeof entry.abortReason === 'string' && entry.abortReason) ||
+      (status && status !== 'ok' ? status : null) ||
+      null;
+    const endedAt = typeof entry.endedAt === 'number' ? entry.endedAt : null;
+    return { aborted, status, reason, endedAt };
+  } catch {
+    return empty;
   }
 }
 

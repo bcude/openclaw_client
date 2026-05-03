@@ -9,6 +9,7 @@ import plugin from './plugin';
 import skill from './skill';
 import cron from './cron';
 import update from './update';
+import gateway from './gateway';
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use(skill);
 router.use(cron);
 router.use(auth);
 router.use(update);
+router.use(gateway);
 
 export default router;

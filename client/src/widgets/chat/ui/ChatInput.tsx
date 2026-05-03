@@ -7,6 +7,7 @@ import {
   InsertDriveFileOutlined,
   ImageOutlined,
 } from '@mui/icons-material';
+import { GatewayStatusDot } from '../../../entities/gateway';
 
 interface ChatInputProps {
   onSend: (text: string, files: File[]) => Promise<void>;
@@ -96,6 +97,13 @@ export default function ChatInput({ onSend, isStreaming }: ChatInputProps) {
         }}
       >
         <input ref={fileInputRef} type="file" multiple hidden onChange={handleFileChange} />
+        {/* Gateway status dot — mirrors WebSocket health so the user sees
+         *  immediately whether agent traffic can flow. Sits to the left
+         *  of the paperclip so it stays visible without crowding the
+         *  send-side controls. */}
+        <Box sx={{ display: 'flex', alignItems: 'center', mr: 0.75, ml: 0.25 }}>
+          <GatewayStatusDot />
+        </Box>
         <IconButton
           onClick={() => fileInputRef.current?.click()}
           disabled={isStreaming || pendingFiles.length >= 5}

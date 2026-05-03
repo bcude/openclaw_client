@@ -4,8 +4,131 @@ import {
   JsonlEntry,
   JsonlTextPart,
   JsonlThinkingPart,
+  JsonlToolCallPart,
   OpenClawMessage,
+  ToolStep,
+  ToolStepOutput,
 } from '../../@types/openclaw';
+
+/** Hard limits to keep tool step JSON small enough to live alongside chat
+ *  messages in SQLite without blowing up message payloads. Real tool I/O
+ *  (e.g. file dumps, large model outputs) routinely runs past these caps;
+ *  the UI shows a "(truncated)" hint when that happens. */
+const MAX_TOOL_INPUT_VALUE_CHARS = 8_000;
+const MAX_TOOL_OUTPUT_TEXT_CHARS = 16_000;
+/** Provider-specific noise we never want to surface to the UI. */
+const HIDDEN_TOOL_INPUT_KEYS = new Set(['thoughtSignature']);
+
+function isTextPart(p: JsonlContentPart): p is JsonlTextPart {
+  return p.type === 'text' && typeof (p as JsonlTextPart).text === 'string';
+}
+
+function isThinkingPart(p: JsonlContentPart): p is JsonlThinkingPart {
+  return p.type === 'thinking' && typeof (p as JsonlThinkingPart).thinking === 'string';
+}
+
+function truncateString(value: string, max: number): { value: string; truncated: boolean } {
+  if (value.length <= max) return { value, truncated: false };
+  return { value: `${value.slice(0, max)}\n…[truncated ${value.length - max} chars]`, truncated: true };
+}
+
+function sanitizeToolInput(args: unknown): Record<string, unknown> | null {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+  const out: Record<string, unknown> = {};
+  Object.entries(args as Record<string, unknown>).forEach(([k, v]) => {
+    if (HIDDEN_TOOL_INPUT_KEYS.has(k)) return;
+    if (typeof v === 'string') {
+      out[k] = truncateString(v, MAX_TOOL_INPUT_VALUE_CHARS).value;
+    } else {
+      /* For nested objects we serialize once + truncate, avoiding deep
+       * recursion through arbitrary tool schemas. */
+      try {
+        const json = JSON.stringify(v);
+        if (json && json.length > MAX_TOOL_INPUT_VALUE_CHARS) {
+          out[k] = `${json.slice(0, MAX_TOOL_INPUT_VALUE_CHARS)}…[truncated]`;
+        } else {
+          out[k] = v;
+        }
+      } catch {
+        out[k] = '[unserialisable]';
+      }
+    }
+  });
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+function isToolCallPart(p: JsonlContentPart): p is JsonlToolCallPart {
+  return (
+    Boolean(p) && typeof p === 'object' && (p as { type?: unknown }).type === 'toolCall'
+  );
+}
+
+/**
+ * Walk all JSONL entries once and index `toolResult` rows by their
+ * `toolCallId`. The map gives us O(1) lookup when assembling assistant
+ * messages so the parser stays O(N) overall.
+ */
+function indexToolResults(entries: JsonlEntry[]): Map<string, ToolStepOutput> {
+  const out = new Map<string, ToolStepOutput>();
+  entries.forEach((entry) => {
+    if (entry.type !== 'message') return;
+    const msg = entry.message as
+      | {
+          role?: string;
+          toolCallId?: string;
+          content?: JsonlContentPart[] | string;
+          isError?: boolean;
+          details?: Record<string, unknown>;
+        }
+      | undefined;
+    if (!msg || msg.role !== 'toolResult' || !msg.toolCallId) return;
+
+    /* The result's primary text lives either as a single string in
+     * `content` or as a list of text parts. Joining is the safe default. */
+    let text = '';
+    if (typeof msg.content === 'string') {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = msg.content
+        .filter(isTextPart)
+        .map((c) => c.text)
+        .join('\n');
+    }
+    const { value: clipped, truncated } = truncateString(text, MAX_TOOL_OUTPUT_TEXT_CHARS);
+
+    const details = (msg.details ?? {}) as {
+      status?: unknown;
+      exitCode?: unknown;
+      durationMs?: unknown;
+    };
+    out.set(msg.toolCallId, {
+      text: clipped,
+      isError: msg.isError === true,
+      status: typeof details.status === 'string' ? details.status : null,
+      exitCode: typeof details.exitCode === 'number' ? details.exitCode : null,
+      durationMs: typeof details.durationMs === 'number' ? details.durationMs : null,
+      truncated,
+    });
+  });
+  return out;
+}
+
+function extractToolSteps(
+  content: JsonlContentPart[] | string,
+  results: Map<string, ToolStepOutput>
+): ToolStep[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter(isToolCallPart).map((part) => {
+    const id = typeof part.id === 'string' ? part.id : '';
+    const name = typeof part.name === 'string' ? part.name : 'tool';
+    return {
+      id,
+      name,
+      input: sanitizeToolInput(part.arguments),
+      output: id ? results.get(id) ?? null : null,
+    };
+  });
+}
 
 export function extractUserText(raw: string): string {
   const trimmed = raw.trim();
@@ -27,14 +150,6 @@ export function extractAssistantText(raw: string): string {
     .replace(/<thinking>[\s\S]*?<\/thinking>/gi, '')
     .replace(/<redacted_thinking>[\s\S]*?<\/redacted_thinking>/gi, '')
     .trim();
-}
-
-function isTextPart(p: JsonlContentPart): p is JsonlTextPart {
-  return p.type === 'text' && typeof (p as JsonlTextPart).text === 'string';
-}
-
-function isThinkingPart(p: JsonlContentPart): p is JsonlThinkingPart {
-  return p.type === 'thinking' && typeof (p as JsonlThinkingPart).thinking === 'string';
 }
 
 function readJsonlLines(jsonlPath: string): JsonlEntry[] {
@@ -71,7 +186,13 @@ export function readFirstUserMessage(jsonlPath: string): string | null {
 
 export function parseMessagesFromJsonl(jsonlPath: string): OpenClawMessage[] {
   try {
-    const raw = readJsonlLines(jsonlPath)
+    const entries = readJsonlLines(jsonlPath);
+    /* One pre-pass to index toolResult rows by toolCallId — assistant entries
+     * reference these by id rather than positionally, so a Map is the only
+     * reliable way to pair them. */
+    const resultsByCallId = indexToolResults(entries);
+
+    const raw = entries
       .filter((entry) => {
         if (entry.type !== 'message') return false;
         const role = entry.message?.role;
@@ -97,13 +218,18 @@ export function parseMessagesFromJsonl(jsonlPath: string): OpenClawMessage[] {
           .join('\n')
           .trim();
         const thinking = [structuredThink, inlineThink].filter(Boolean).join('\n').trim() || null;
-        if (!text) return null;
+        const toolSteps = role === 'assistant' ? extractToolSteps(message.content, resultsByCallId) : [];
+        /* Keep the entry if it has ANY meaningful signal: text, thinking, or
+         * tool calls. Tool-only assistant turns used to be dropped here,
+         * which made tool-using runs look like silent gaps in the chat. */
+        if (!text && !thinking && toolSteps.length === 0) return null;
         return {
           externalId: entry.id || '',
           role,
           text,
           thinking,
           timestamp: entry.timestamp || null,
+          toolSteps: toolSteps.length > 0 ? toolSteps : null,
         };
       })
       .filter((m): m is OpenClawMessage => m !== null);
@@ -113,6 +239,9 @@ export function parseMessagesFromJsonl(jsonlPath: string): OpenClawMessage[] {
       if (msg.role === 'assistant' && prev?.role === 'assistant') {
         prev.text += msg.text;
         if (msg.thinking) prev.thinking = (prev.thinking || '') + msg.thinking;
+        if (msg.toolSteps && msg.toolSteps.length > 0) {
+          prev.toolSteps = [...(prev.toolSteps ?? []), ...msg.toolSteps];
+        }
         prev.externalId = msg.externalId;
         prev.timestamp = msg.timestamp || prev.timestamp;
       } else {

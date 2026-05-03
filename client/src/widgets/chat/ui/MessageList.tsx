@@ -1,6 +1,22 @@
-import { Alert, Box, Typography, CircularProgress } from '@mui/material';
+import { Box, Typography, CircularProgress } from '@mui/material';
 import { MessageBubble } from '../../../entities/message';
 import type { ChatState } from '../model/types';
+
+/** Short, single-line copy shown inside the per-bubble error tooltip. */
+function describeDeliveryError(status: string | null, reason: string | null): string {
+  if (status === 'timeout') {
+    return 'The model went idle past its timeout — no reply was committed. Try resending.';
+  }
+  if (status === 'error') {
+    return reason ? `Run failed: ${reason}.` : 'The daemon ended the run with an error.';
+  }
+  if (status === 'cancelled') {
+    return 'The run was cancelled before a reply was committed.';
+  }
+  return reason
+    ? `The daemon aborted the run: ${reason}.`
+    : 'The daemon aborted the run before a reply was committed.';
+}
 
 interface MessageListProps {
   chat: ChatState;
@@ -18,13 +34,38 @@ export default function MessageList({ chat }: MessageListProps) {
     streamError,
     pendingUserText,
     pendingFilesPreviews,
+    runStatus,
     loadMore,
     loadMoreCursor,
     scrollContainerRef,
     messagesEndRef,
     handleScroll,
-    clearError,
   } = chat;
+
+  /* Two error sources can flag a stuck send:
+   *   1. `streamError` — the SSE pipeline itself failed (network drop,
+   *      gateway 5xx, model timeout surfaced as an error event). Most
+   *      immediate; clears automatically when the next send starts.
+   *   2. `runStatus.aborted` — the daemon's run ended abnormally on the
+   *      previous turn (idle timeout, error, cancelled). Surfaces on the
+   *      next poll between runs.
+   * Both render as the same inline marker (warning icon + tooltip) on
+   * whichever bubble is currently waiting for a reply. The marker clears
+   * naturally once an assistant reply arrives after that bubble. */
+  const errorTooltip = streamError
+    ? streamError
+    : runStatus
+      ? describeDeliveryError(runStatus.status, runStatus.reason)
+      : null;
+  const lastInputIdx =
+    errorTooltip && !isStreaming
+      ? (() => {
+          for (let i = messages.length - 1; i >= 0; i -= 1) {
+            if (messages[i].role !== 'assistant') return i;
+          }
+          return -1;
+        })()
+      : -1;
 
   return (
     <Box
@@ -39,29 +80,6 @@ export default function MessageList({ chat }: MessageListProps) {
         py: 2,
       }}
     >
-      {streamError && (
-        <Box
-          sx={{
-            position: 'sticky',
-            top: 0,
-            zIndex: 2,
-            mb: 1.5,
-          }}
-        >
-          <Alert
-            severity="error"
-            variant="filled"
-            onClose={clearError}
-            sx={{
-              alignItems: 'flex-start',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}
-          >
-            {streamError}
-          </Alert>
-        </Box>
-      )}
       {isLoading && !loadMoreCursor ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
           <CircularProgress size={28} />
@@ -90,8 +108,13 @@ export default function MessageList({ chat }: MessageListProps) {
               )}
             </Box>
           )}
-          {messages.map((msg) => (
-            <MessageBubble key={msg._id} message={msg} messageId={msg._id} />
+          {messages.map((msg, idx) => (
+            <MessageBubble
+              key={msg._id}
+              message={msg}
+              messageId={msg._id}
+              deliveryError={idx === lastInputIdx ? errorTooltip : null}
+            />
           ))}
           {isStreaming && (pendingUserText || pendingFilesPreviews.length > 0) && (
             <MessageBubble

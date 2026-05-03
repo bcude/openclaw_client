@@ -1,5 +1,5 @@
 import type { RefObject } from 'react';
-import type { Message, MessageFile } from '../../../entities/message';
+import type { Message, MessageFile, SessionRunStatus } from '../../../entities/message';
 
 export interface ChatState {
   messages: Message[];
@@ -14,6 +14,10 @@ export interface ChatState {
   streamError: string | null;
   pendingUserText: string;
   pendingFilesPreviews: MessageFile[];
+
+  /** Last-run state from the gateway daemon. `null` while unknown. */
+  runStatus: SessionRunStatus | null;
+  /** Hide the timeout/abort banner for the current chat session. */
 
   send: (text: string, files: File[]) => Promise<void>;
   loadMore: () => void;

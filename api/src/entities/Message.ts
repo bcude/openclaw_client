@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, DeleteDateColumn, Index } from 'typeorm';
+import { ToolStep } from '../@types/openclaw';
 
 @Entity('messages')
 @Index(['conversationId', 'externalId'], { unique: true, where: 'externalId IS NOT NULL' })
@@ -20,6 +21,9 @@ export default class Message {
 
   @Column({ type: 'simple-json', default: '[]' })
   files: { filename: string; originalName: string; mimetype: string; size: number; url: string }[];
+
+  @Column({ type: 'simple-json', nullable: true, default: null })
+  toolSteps: ToolStep[] | null;
 
   @Column({ type: 'text', default: 'user' })
   role: 'user' | 'assistant';

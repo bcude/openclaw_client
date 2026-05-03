@@ -267,6 +267,7 @@ const sync: RequestHandler = async (req, res, next) => {
               externalId: m.externalId,
               text: m.text,
               thinking: m.thinking || null,
+              toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
               files: [],
               role: m.role as MessageRole,
               createdBy: req.user!._id,

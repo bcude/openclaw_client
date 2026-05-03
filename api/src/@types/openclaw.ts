@@ -4,12 +4,29 @@ export interface SseEmitter {
   error: (msg: string) => void;
 }
 
+export interface ToolStepOutput {
+  text: string;
+  isError: boolean;
+  status?: string | null;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  truncated?: boolean;
+}
+
+export interface ToolStep {
+  id: string;
+  name: string;
+  input: Record<string, unknown> | null;
+  output: ToolStepOutput | null;
+}
+
 export interface OpenClawMessage {
   externalId: string;
   role: string;
   text: string;
   thinking: string | null;
   timestamp: string | null;
+  toolSteps: ToolStep[] | null;
 }
 
 export interface OpenClawSession {
@@ -31,6 +48,18 @@ export interface SessionEntry {
   fastMode?: boolean | null;
   verboseLevel?: string | null;
   reasoningLevel?: string | null;
+  status?: string;
+  abortedLastRun?: boolean;
+  abortReason?: string;
+  lastInteractionAt?: number;
+  endedAt?: number;
+}
+
+export interface SessionRunStatus {
+  aborted: boolean;
+  status: string | null;
+  reason: string | null;
+  endedAt: number | null;
 }
 
 export type SessionsFile = Record<string, SessionEntry>;
@@ -47,12 +76,23 @@ export interface JsonlThinkingPart {
   thinking: string;
 }
 
+export interface JsonlToolCallPart {
+  type: 'toolCall';
+  id?: string;
+  name?: string;
+  arguments?: unknown;
+}
+
 export interface JsonlOtherPart {
   type: string;
   [key: string]: unknown;
 }
 
-export type JsonlContentPart = JsonlTextPart | JsonlThinkingPart | JsonlOtherPart;
+export type JsonlContentPart =
+  | JsonlTextPart
+  | JsonlThinkingPart
+  | JsonlToolCallPart
+  | JsonlOtherPart;
 
 export interface JsonlMessageEntry {
   type: 'message';
