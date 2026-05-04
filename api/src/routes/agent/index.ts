@@ -19,7 +19,9 @@ router
   .get(auth, validate.workspaceFilename, controller.getWorkspaceFile)
   .put(auth, validate.workspacePut, controller.putWorkspaceFile);
 
-router.route('/agent/:id(\\d+)/workspace/uploads/:filename').get(controller.serveWorkspaceUpload);
+router
+  .route('/agent/:id(\\d+)/workspace/uploads/:filename')
+  .get(auth, validate.id, controller.serveWorkspaceUpload);
 
 router
   .route('/agent/:id(\\d+)/skills')

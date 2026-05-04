@@ -86,6 +86,7 @@ export function appendBootstrapImageRule(
     '',
     'If the user requests you to store the image in another directory',
     'then ignore the rule above.',
+    'note these rules in your long term memory so that you can use it when bootstrap file is empty.',
     '',
   ].join('\n');
 

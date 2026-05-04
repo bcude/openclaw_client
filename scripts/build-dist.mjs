@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dist');
+const DIST_REAL = fs.realpathSync(DIST);
 const PORT = Number(process.env.CLIENT_PORT) || Number(process.env.PORT) || 18800;
 const API_PORT = Number(process.env.API_PORT) || 18802;
 
@@ -41,8 +42,56 @@ function injectRuntimeConfig(html, hostHeader) {
   return tag + html;
 }
 
+/**
+ * Resolve a request URL to a file inside DIST without permitting
+ * directory traversal or symlink escapes.
+ *
+ *  - URL-decode and parse so query strings and \`..\` segments collapse
+ *    via WHATWG \`URL\`. Anything that decodes to a path outside DIST
+ *    falls back to the SPA shell.
+ *  - \`fs.realpathSync\` follows symlinks before the prefix check so a
+ *    symlinked file inside DIST that points elsewhere can't escape.
+ *  - Returns \`null\` when the request is unresolvable; the caller then
+ *    falls back to index.html (SPA behavior).
+ */
+function resolveSafePath(reqUrl) {
+  let pathname;
+  try {
+    pathname = new URL(reqUrl || '/', 'http://localhost').pathname;
+  } catch {
+    return null;
+  }
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (decoded === '/' || decoded === '') return path.join(DIST, 'index.html');
+  // Reject NUL bytes outright (some Node APIs treat them inconsistently).
+  if (decoded.includes('\\0')) return null;
+  const candidate = path.join(DIST, decoded);
+  // \`path.join(DIST, '../foo')\` resolves above DIST. Compare against
+  // both the canonical and real (symlink-resolved) DIST roots.
+  const sep = path.sep;
+  if (!candidate.startsWith(DIST + sep) && candidate !== DIST) return null;
+  let real;
+  try {
+    real = fs.realpathSync(candidate);
+  } catch {
+    return candidate; // file doesn't exist yet — caller will 404 / SPA-fallback
+  }
+  if (!real.startsWith(DIST_REAL + sep) && real !== DIST_REAL) return null;
+  return real;
+}
+
 http.createServer((req, res) => {
-  let filePath = path.join(DIST, req.url === '/' ? 'index.html' : req.url);
+  let filePath = resolveSafePath(req.url);
+  if (filePath === null) {
+    res.writeHead(400);
+    res.end('Bad request');
+    return;
+  }
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     filePath = path.join(DIST, 'index.html');
   }

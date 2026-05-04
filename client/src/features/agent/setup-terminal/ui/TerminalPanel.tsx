@@ -23,11 +23,22 @@ interface TerminalPanelProps {
   onDeleting?: (id: string | null) => void;
 }
 
-function buildWsUrl(agentName: string): string {
+async function fetchPtyTicket(): Promise<string> {
+  const token = localStorage.getItem('token') || '';
+  const res = await fetch(`${API_BASE_URL}/auth/ws-ticket`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`ws-ticket request failed (${res.status})`);
+  const body = (await res.json()) as { ticket?: string };
+  if (!body.ticket) throw new Error('ws-ticket response missing ticket');
+  return body.ticket;
+}
+
+function buildWsUrl(agentName: string, ticket: string): string {
   const base = API_BASE_URL.replace(/\/api\/?$/, '');
   const wsBase = base.replace(/^http/, 'ws');
-  const token = localStorage.getItem('token') || '';
-  return `${wsBase}/ws/pty?agent=${encodeURIComponent(agentName)}&token=${encodeURIComponent(token)}`;
+  return `${wsBase}/ws/pty?agent=${encodeURIComponent(agentName)}&ticket=${encodeURIComponent(ticket)}`;
 }
 
 const AUTO_CLOSE_MS = 2500;
@@ -116,7 +127,7 @@ export default function TerminalPanel({
 
     requestAnimationFrame(() => {
       fit.fit();
-      initWebSocket(term);
+      void initWebSocket(term);
       term.focus();
     });
 
@@ -134,8 +145,16 @@ export default function TerminalPanel({
     observer.observe(container);
     observerRef.current = observer;
 
-    function initWebSocket(t: Terminal) {
-      const url = buildWsUrl(agentName);
+    async function initWebSocket(t: Terminal) {
+      let ticket: string;
+      try {
+        ticket = await fetchPtyTicket();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        t.write(`\r\n\x1b[31mFailed to authorize terminal: ${msg}\x1b[0m\r\n`);
+        return;
+      }
+      const url = buildWsUrl(agentName, ticket);
       const ws = new WebSocket(url);
       wsRef.current = ws;
 

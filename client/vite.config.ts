@@ -113,14 +113,27 @@ export default defineConfig(({ mode }) => {
           // (https://github.com/GoogleChrome/workbox/issues/3245). The SW is
           // already small (<20KB), so skipping minification is a safe tradeoff.
           mode: 'development',
-          // Precache static build output (JS, CSS, HTML, fonts).
-          globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+          // Precache static build output (JS, CSS, fonts, images) but
+          // **not** index.html. The shell is fetched fresh on every
+          // load so:
+          //   1. `window.__OPENCLAW_CONFIG__` (injected by serve.mjs
+          //      from `req.headers.host`) always matches the page's
+          //      hostname — critical when accessing the same install
+          //      via localhost, LAN IP, and Tailscale.
+          //   2. After an `openclaw_client update`, the new
+          //      hashed-asset references in index.html are picked up
+          //      immediately instead of clients pinning to the old
+          //      precached shell until the SW happens to update.
+          globPatterns: ['**/*.{js,css,svg,png,ico,woff2}'],
+          globIgnores: ['**/index.html', 'index.html'],
           // The main app bundle currently weighs ~3.4MB unminified due to MUI + markdown.
           // 6MB headroom avoids nuisance build failures when it grows slightly.
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-          // Allow the SPA shell to serve any client-side route offline…
-          navigateFallback: '/index.html',
-          // …but never intercept API or WebSocket requests.
+          // No `navigateFallback` — every SPA route is fetched from
+          // the network so updated index.html ships immediately. The
+          // tradeoff: the very first navigation after going offline
+          // returns whatever the browser cached on the previous load.
+          navigateFallback: null,
           navigateFallbackDenylist: [/^\/api/, /^\/ws/],
           runtimeCaching: [
             {
@@ -134,9 +147,6 @@ export default defineConfig(({ mode }) => {
               handler: 'NetworkOnly',
             },
           ],
-          // index.html is served with no-store anyway; prevent Workbox from
-          // caching it separately so runtime config (window.__OPENCLAW_CONFIG__)
-          // is always fresh after a port change.
           cleanupOutdatedCaches: true,
         },
         devOptions: {

@@ -6,8 +6,8 @@ import path from 'path';
 import * as pty from 'node-pty';
 import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
-import jwt from 'jsonwebtoken';
 import { getOpenclawBin } from './openclawGateway';
+import { consumePtyTicket } from './ptyTickets';
 
 const IS_WINDOWS = process.platform === 'win32';
 
@@ -27,18 +27,6 @@ function resolveBridge(): string {
 }
 
 const BRIDGE_SCRIPT = resolveBridge();
-
-function verifyToken(token: string): boolean {
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET!) as {
-      id?: string;
-      valid?: string;
-    };
-    return !!(payload.id && payload.valid);
-  } catch {
-    return false;
-  }
-}
 
 function findBinary(name: string): string {
   const lookup = IS_WINDOWS ? 'where' : 'which';
@@ -252,8 +240,13 @@ export default function attachPtyWebSocket(server: HttpServer): void {
       return;
     }
 
-    const token = parsed.searchParams.get('token');
-    if (!token || !verifyToken(token)) {
+    // Single-use ticket beats long-lived JWT in the URL — see
+    // `services/ptyTickets.ts` for the threat model. The ticket also
+    // pins the upgrade to a specific user, which we don't currently use
+    // for authorization but plumb through for future per-agent ACLs.
+    const ticket = parsed.searchParams.get('ticket');
+    if (!consumePtyTicket(ticket)) {
+      console.warn('[pty] upgrade rejected: invalid or expired ticket'); /* eslint-disable-line */
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljsGithubLightUrl from 'highlight.js/styles/github.css?url';
 import hljsGithubDarkUrl from 'highlight.js/styles/github-dark.css?url';
+import AuthedImage from './AuthedImage';
 
 let hljsThemeLinkEl: HTMLLinkElement | null = null;
 
@@ -45,6 +46,29 @@ const markdownComponents: Partial<Components> = {
           {children}
         </Box>
       </Box>
+    );
+  },
+  // Workspace uploads require auth. `AuthedImage` fetches same-API
+  // URLs with the JWT in `Authorization` and renders the response as
+  // an object URL — so neither the token nor the workspace URL ever
+  // appears in the DOM source. Third-party URLs (the agent might
+  // embed external images in its reply) pass through unchanged.
+  //
+  // Cherry-pick valid `<img>` attributes only. ReactMarkdown also
+  // forwards a `node` prop (the AST element) which would otherwise
+  // be stamped onto the DOM as `node="[object Object]"`.
+  img({ src, alt, title, width, height, className }) {
+    const safeSrc = typeof src === 'string' && src ? src : undefined;
+    if (!safeSrc) return null;
+    return (
+      <AuthedImage
+        src={safeSrc}
+        alt={alt ?? ''}
+        title={title}
+        width={width}
+        height={height}
+        className={className}
+      />
     );
   },
 };
