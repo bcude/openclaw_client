@@ -201,12 +201,22 @@ export function parseMessagesFromJsonl(jsonlPath: string): OpenClawMessage[] {
       .map((entry): OpenClawMessage | null => {
         const message = entry.message!;
         const { role } = message;
+        // `message.content` may arrive as a bare string (plain user prompts)
+        // or a ContentPart[]. Without the string branch, those user entries
+        // were filtered to empty by the `!text && !thinking && !toolSteps`
+        // guard below, leaving consecutive assistant entries with no user
+        // separator. The reduce at the bottom of this function then
+        // coalesced every assistant turn into one cumulative bubble.
+        // Mirrors the same handling in `readFirstUserMessage` above.
         const content = Array.isArray(message.content) ? message.content : [];
-        const rawText = content
-          .filter(isTextPart)
-          .map((c) => c.text)
-          .join('\n')
-          .trim();
+        const rawText =
+          typeof message.content === 'string'
+            ? message.content.trim()
+            : content
+                .filter(isTextPart)
+                .map((c) => c.text)
+                .join('\n')
+                .trim();
         const text = role === 'user' ? extractUserText(rawText) : extractAssistantText(rawText);
         const inlineThinkMatch = rawText.match(
           /<(?:think|thinking)>([\s\S]*?)<\/(?:think|thinking)>/i
