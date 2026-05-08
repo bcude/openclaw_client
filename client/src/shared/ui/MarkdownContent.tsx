@@ -1,12 +1,89 @@
-import { useEffect } from 'react';
-import { Box, Typography, useTheme } from '@mui/material';
+import { useEffect, useRef, useState, type HTMLAttributes } from 'react';
+import { Box, IconButton, Tooltip, Typography, useTheme } from '@mui/material';
 import { alpha, getLuminance } from '@mui/material/styles';
+import CheckIcon from '@mui/icons-material/Check';
+import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import hljsGithubLightUrl from 'highlight.js/styles/github.css?url';
 import hljsGithubDarkUrl from 'highlight.js/styles/github-dark.css?url';
 import AuthedImage from './AuthedImage';
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to legacy path. The Clipboard API rejects in
+      // non-secure contexts (HTTP origins like Tailscale magic-DNS),
+      // and some browsers reject without a user gesture even on HTTPS.
+    }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.pointerEvents = 'none';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+type PreProps = HTMLAttributes<HTMLPreElement> & { node?: unknown };
+
+function CodeBlockWithCopy({ children, node: _node, ...preProps }: PreProps) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const text = preRef.current?.textContent ?? '';
+    const ok = await copyTextToClipboard(text);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <Box sx={{ position: 'relative' }}>
+      <Tooltip title={copied ? 'Copied' : 'Copy'} placement="left" enterDelay={300}>
+        <IconButton
+          aria-label="Copy code to clipboard"
+          size="small"
+          onClick={handleCopy}
+          sx={{
+            position: 'absolute',
+            top: 6,
+            right: 6,
+            zIndex: 1,
+            color: 'text.secondary',
+            opacity: 0.7,
+            '&:hover': { opacity: 1 },
+          }}
+        >
+          {copied ? (
+            <CheckIcon fontSize="inherit" />
+          ) : (
+            <ContentCopyOutlinedIcon fontSize="inherit" />
+          )}
+        </IconButton>
+      </Tooltip>
+      <pre ref={preRef} {...preProps}>
+        {children}
+      </pre>
+    </Box>
+  );
+}
 
 let hljsThemeLinkEl: HTMLLinkElement | null = null;
 
@@ -35,6 +112,7 @@ function stripWrapperTags(text: string): string {
 }
 
 const markdownComponents: Partial<Components> = {
+  pre: (CodeBlockWithCopy as unknown) as Components['pre'],
   table({ children, ...props }) {
     return (
       <Box sx={{ overflowX: 'auto', maxWidth: '100%', mb: 0.75, WebkitOverflowScrolling: 'touch' }}>
