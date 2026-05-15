@@ -247,10 +247,35 @@ export function parseMessagesFromJsonl(jsonlPath: string): OpenClawMessage[] {
     return raw.reduce<OpenClawMessage[]>((messages, msg) => {
       const prev = messages[messages.length - 1];
       if (msg.role === 'assistant' && prev?.role === 'assistant') {
-        prev.text += msg.text;
-        if (msg.thinking) prev.thinking = (prev.thinking || '') + msg.thinking;
+        /* OpenClaw 2026.5.12 (#80725, gateway v4) writes each assistant
+         * turn TWICE to the JSONL: one entry with the raw `<final>…</final>`
+         * wrapper plus toolCall parts, then a second post-processed entry
+         * with the wrapper stripped and no toolCalls. `extractAssistantText`
+         * normalises both to the same string, so the old "always append"
+         * rule doubled every v4 reply (`Test 4 received!…post!Test 4
+         * received!…post!`). The four cases below cover the new shape
+         * without regressing legitimate split turns (older daemons would
+         * stream multiple disjoint text chunks). */
+        if (msg.text && prev.text === msg.text) {
+          // identical text — second pass of same turn, no-op on text
+        } else if (msg.text && prev.text && prev.text.includes(msg.text)) {
+          // prev already covers the new text — drop it
+        } else if (msg.text && prev.text && msg.text.includes(prev.text)) {
+          // new entry is a superset (e.g. post-processed full reply) — replace
+          prev.text = msg.text;
+        } else if (msg.text) {
+          prev.text += msg.text;
+        }
+        if (msg.thinking) {
+          if (!prev.thinking) prev.thinking = msg.thinking;
+          else if (!prev.thinking.includes(msg.thinking)) prev.thinking += msg.thinking;
+        }
         if (msg.toolSteps && msg.toolSteps.length > 0) {
-          prev.toolSteps = [...(prev.toolSteps ?? []), ...msg.toolSteps];
+          const seen = new Set((prev.toolSteps ?? []).map((s) => s.id).filter(Boolean));
+          const fresh = msg.toolSteps.filter((s) => !s.id || !seen.has(s.id));
+          if (fresh.length > 0) {
+            prev.toolSteps = [...(prev.toolSteps ?? []), ...fresh];
+          }
         }
         prev.externalId = msg.externalId;
         prev.timestamp = msg.timestamp || prev.timestamp;

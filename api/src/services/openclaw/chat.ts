@@ -179,13 +179,33 @@ function runAgentViaGateway(
     const sseType =
       stream === 'assistant' ? 'response.output_text.delta' : 'response.thinking.delta';
 
-    if (alreadySent.length === 0 || clean.startsWith(alreadySent)) {
-      if (clean.length > alreadySent.length) {
-        const newContent = clean.substring(alreadySent.length);
-        if (stream === 'assistant') assistantSent = clean;
-        else reasoningSent = clean;
-        emitter.send(sseType, newContent);
-      }
+    /* OpenClaw 2026.5.12 (#80725) bumped the gateway to v4 and now emits the
+     * assistant turn *twice* on the `agent` channel: once with the raw
+     * `<final>…</final>` wrapping during streaming, then again post-processed
+     * with the wrapper stripped. Our `stripGatewayTags` reduces both passes
+     * to the same `clean` text, so the second pass arrives as `clean = "T",
+     * "Te", "Tes", …` while `alreadySent` already holds the full first pass.
+     * The old logic treated this as a "rewrite" and re-emitted the full
+     * content, causing the assistant bubble to render the same reply twice
+     * concatenated (UI shows `…Still 249 and 153!Test 4 received!…`).
+     *
+     * Three cases now:
+     *   1. `clean` strictly extends `alreadySent` → emit the new tail.
+     *   2. `clean` is a prefix of `alreadySent` (daemon restarted the same
+     *      content) → drop; the client already shows at least this much.
+     *   3. Otherwise (genuine rewrite of different content) → fall back to
+     *      emitting the whole `clean`. The SSE consumer appends, which is
+     *      imperfect for true rewrites but matches pre-v4 behaviour and
+     *      doesn't trigger on the duplicate-turn pattern.
+     */
+    if (clean.length > alreadySent.length && clean.startsWith(alreadySent)) {
+      const newContent = clean.substring(alreadySent.length);
+      if (stream === 'assistant') assistantSent = clean;
+      else reasoningSent = clean;
+      emitter.send(sseType, newContent);
+    } else if (alreadySent.startsWith(clean)) {
+      /* Daemon-side restart of identical content (v4 post-process pass).
+       * Skip — nothing new to surface to the client. */
     } else {
       if (stream === 'assistant') assistantSent = clean;
       else reasoningSent = clean;

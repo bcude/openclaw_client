@@ -428,47 +428,63 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
         synced += toInsert.length;
       }
 
-      /* Refresh tool steps on already-linked assistant rows. A long-running
-       * tool finishes AFTER its parent assistant turn was first synced, so
-       * the toolResult lands in JSONL on a later poll. Without this pass,
-       * the row keeps `output: null` forever and the UI shows "(no result
-       * captured)". We compare canonical JSON to skip no-op writes. */
-      const liveAssistantSteps = jsonlMessages.filter(
-        (m) => m.role === 'assistant' && m.toolSteps && m.toolSteps.length > 0
+      /* Refresh already-linked assistant rows against the current JSONL.
+       *
+       *  - toolSteps: a long-running tool finishes AFTER its parent assistant
+       *    turn was first synced; the toolResult lands in JSONL on a later
+       *    poll, so without this pass `output` stays null forever.
+       *  - text / thinking: OpenClaw 2026.5.12 (gateway v4) writes each
+       *    assistant turn twice in JSONL; older rows stored the concatenated
+       *    doubled text. Now that `parseMessagesFromJsonl` dedupes, we
+       *    overwrite the stale doubled value so the UI heals on next poll.
+       *
+       *  We compare canonical JSON to skip no-op writes. */
+      const liveAssistants = jsonlMessages.filter(
+        (m) => m.role === 'assistant' && m.externalId
       );
-      if (liveAssistantSteps.length) {
-        const liveIds = liveAssistantSteps.map((m) => m.externalId!).filter(Boolean);
-        if (liveIds.length) {
-          const existing = await msgRepo.find({
-            where: {
-              conversationId: convId,
-              role: 'assistant',
-              externalId: In(liveIds),
-            },
-            select: ['_id', 'externalId', 'toolSteps'],
-          });
-          const dbByExt = new Map(existing.map((m) => [m.externalId!, m]));
-          const refreshes: Array<{ id: number; toolSteps: typeof liveAssistantSteps[number]['toolSteps'] }> = [];
-          liveAssistantSteps.forEach((m) => {
-            const row = dbByExt.get(m.externalId!);
-            if (!row) return;
-            const liveJson = JSON.stringify(m.toolSteps ?? null);
-            const dbJson = JSON.stringify(row.toolSteps ?? null);
-            if (liveJson !== dbJson) {
-              refreshes.push({ id: row._id, toolSteps: m.toolSteps });
-            }
-          });
-          if (refreshes.length) {
-            await Promise.all(
-              refreshes.map((r) => {
-                const patch = { toolSteps: r.toolSteps } as unknown as Parameters<
-                  typeof msgRepo.update
-                >[1];
-                return msgRepo.update(r.id, patch);
-              })
-            );
-            synced += refreshes.length;
+      if (liveAssistants.length) {
+        const liveIds = liveAssistants.map((m) => m.externalId!);
+        const existing = await msgRepo.find({
+          where: {
+            conversationId: convId,
+            role: 'assistant',
+            externalId: In(liveIds),
+          },
+          select: ['_id', 'externalId', 'text', 'thinking', 'toolSteps'],
+        });
+        const dbByExt = new Map(existing.map((m) => [m.externalId!, m]));
+        type RefreshPatch = {
+          id: number;
+          patch: Partial<{
+            text: string;
+            thinking: string | null;
+            toolSteps: (typeof liveAssistants)[number]['toolSteps'];
+          }>;
+        };
+        const refreshes: RefreshPatch[] = [];
+        liveAssistants.forEach((m) => {
+          const row = dbByExt.get(m.externalId!);
+          if (!row) return;
+          const patch: RefreshPatch['patch'] = {};
+          if (m.text && m.text !== row.text) patch.text = m.text;
+          if ((m.thinking ?? null) !== (row.thinking ?? null)) {
+            patch.thinking = m.thinking ?? null;
           }
+          const liveStepsJson = JSON.stringify(m.toolSteps ?? null);
+          const dbStepsJson = JSON.stringify(row.toolSteps ?? null);
+          if (liveStepsJson !== dbStepsJson) patch.toolSteps = m.toolSteps;
+          if (Object.keys(patch).length > 0) {
+            refreshes.push({ id: row._id, patch });
+          }
+        });
+        if (refreshes.length) {
+          await Promise.all(
+            refreshes.map((r) => {
+              const patch = r.patch as unknown as Parameters<typeof msgRepo.update>[1];
+              return msgRepo.update(r.id, patch);
+            })
+          );
+          synced += refreshes.length;
         }
       }
     }
