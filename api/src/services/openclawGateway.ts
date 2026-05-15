@@ -202,7 +202,7 @@ export class GatewayClient {
               method: 'connect',
               params: {
                 minProtocol: 3,
-                maxProtocol: 3,
+                maxProtocol: 4,
                 client: {
                   id: 'gateway-client',
                   version: '1.0.0',
@@ -351,9 +351,7 @@ export class GatewayClient {
     );
     const delay = Math.round(expBase * (0.5 + Math.random() * 0.5));
     this.reconnectAttempts += 1;
-    console.log(
-      `[gateway] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`
-    );
+    console.log(`[gateway] reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
     const timer = setTimeout(() => {
       this.reconnectTimer = null;
       this.ensureConnected().catch(() => {});
@@ -490,10 +488,7 @@ const NEEDS_SHELL_RE = /\.(cmd|bat)$/i;
  * interprets `&`, `|`, `^` if they appear unquoted in user-supplied args.
  * All current call sites pass admin-controlled identifiers, not raw user input.
  */
-export function ocExec(
-  args: string[],
-  options: ExecFileSyncOptionsWithStringEncoding
-): string;
+export function ocExec(args: string[], options: ExecFileSyncOptionsWithStringEncoding): string;
 export function ocExec(args: string[], options?: Parameters<typeof execFileSync>[2]): Buffer;
 export function ocExec(args: string[], options: Parameters<typeof execFileSync>[2] = {}): unknown {
   if (IS_WINDOWS && NEEDS_SHELL_RE.test(OPENCLAW_BIN)) {
