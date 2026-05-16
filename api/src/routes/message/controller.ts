@@ -200,41 +200,18 @@ const chat: Chat = async (req, res, next) => {
         .catch(() => {});
     }
 
-    // Fetch messages from JSONL to get externalIds
+    // Link the user message to its JSONL externalId so the poll
+    // endpoint can recognise it later and skip duplicate inserts.
+    // Assistant message persistence is left entirely to the poll
+    // endpoint which has robust dedup logic; saving it here as well
+    // caused duplicate rows because the JSONL externalId can shift
+    // between reads (gateway v4 multi-pass writes).
     try {
       const jsonlMessages = ocService.getSessionMessages(agentIdForFiles, sessionKey);
       if (jsonlMessages.length) {
         const lastUserJsonl = [...jsonlMessages].reverse().find((m) => m.role === 'user');
-        const lastAssistantJsonl = [...jsonlMessages].reverse().find((m) => m.role === 'assistant');
-
         if (lastUserJsonl?.externalId) {
           await msgRepo.update(savedUser._id, { externalId: lastUserJsonl.externalId });
-        }
-
-        // Save assistant message from JSONL
-        if (lastAssistantJsonl) {
-          const assistantText = stripWrapperTags(lastAssistantJsonl.text).trim();
-          const assistantThinking = lastAssistantJsonl.thinking
-            ? stripWrapperTags(lastAssistantJsonl.thinking).trim()
-            : null;
-          const assistantToolSteps = lastAssistantJsonl.toolSteps ?? null;
-
-          /* Persist if we got any signal: real text, thinking, or tool calls
-           * — the last produces a compact tool-stub bubble in the UI. */
-          if (assistantText || assistantThinking || (assistantToolSteps && assistantToolSteps.length > 0)) {
-            const assistantMessage = msgRepo.create({
-              conversationId: Number(conversationId),
-              externalId: lastAssistantJsonl.externalId || null,
-              text: assistantText,
-              thinking: assistantThinking || null,
-              toolSteps:
-                assistantToolSteps && assistantToolSteps.length > 0 ? assistantToolSteps : null,
-              role: 'assistant' as const,
-              createdBy: req.user!._id,
-              createdAt: new Date(),
-            });
-            await msgRepo.save(assistantMessage);
-          }
         }
       }
     } catch {
