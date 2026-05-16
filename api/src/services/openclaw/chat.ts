@@ -207,9 +207,24 @@ function runAgentViaGateway(
       /* Daemon-side restart of identical content (v4 post-process pass).
        * Skip — nothing new to surface to the client. */
     } else {
-      if (stream === 'assistant') assistantSent = clean;
-      else reasoningSent = clean;
-      emitter.send(sseType, clean);
+      /* Playback concatenation can produce a chunk whose prefix overlaps the
+       * previous pass but also includes new content from the next pass. Emit
+       * only the new tail when we can detect that overlap. */
+      let overlap = Math.min(alreadySent.length, clean.length);
+      while (overlap > 0 && !alreadySent.endsWith(clean.slice(0, overlap))) overlap--;
+      if (overlap > 0) {
+        const tail = clean.slice(overlap);
+        if (tail.length) {
+          const updated = alreadySent + tail;
+          if (stream === 'assistant') assistantSent = updated;
+          else reasoningSent = updated;
+          emitter.send(sseType, tail);
+        }
+      } else {
+        if (stream === 'assistant') assistantSent = clean;
+        else reasoningSent = clean;
+        emitter.send(sseType, clean);
+      }
     }
   });
 
@@ -227,7 +242,7 @@ function runAgentViaGateway(
   }
 
   gateway
-    .request('agent', params, { expectFinal: true, timeoutMs: 120000 })
+    .request('agent', params, { expectFinal: true, timeoutMs: 600000 })
     .then(() => {
       gateway.offEvent(listenerKey);
       if (sessionKey) {
