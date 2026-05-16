@@ -387,22 +387,73 @@ const poll: RequestHandler<{ conversationId: string }, unknown, never, { after?:
       }
 
       if (toInsert.length) {
-        await msgRepo.save(
-          toInsert.map((m) =>
-            msgRepo.create({
-              conversationId: convId,
-              externalId: m.externalId,
-              text: m.text,
-              thinking: m.thinking || null,
-              toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
-              files: [],
-              role: m.role as 'user' | 'assistant',
-              createdBy: req.user!._id,
-              createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
+        /* Guard against duplicate assistant rows caused by shifting
+         * externalIds. Gateway v4 rewrites JSONL entries during
+         * multi-tool-call turns, so the merged externalId changes
+         * between polls. Before inserting an assistant candidate,
+         * check whether the DB already has a recent assistant row
+         * whose text is a prefix of (or equal to) the new text.
+         * If so, update that row instead of inserting a duplicate. */
+        const recentAssistants = toInsert.some((m) => m.role === 'assistant')
+          ? await msgRepo.find({
+              where: {
+                conversationId: convId,
+                role: 'assistant',
+                createdAt: MoreThan(new Date(Date.now() - 300_000)),
+              },
+              order: { _id: 'DESC' },
+              take: 10,
             })
-          )
-        );
-        synced += toInsert.length;
+          : [];
+
+        const actualInserts: typeof toInsert = [];
+        for (const m of toInsert) {
+          if (m.role === 'assistant' && m.text) {
+            const existing = recentAssistants.find(
+              (r) =>
+                (r.text && m.text.startsWith(r.text)) ||
+                (r.text && r.text.startsWith(m.text)) ||
+                r.text === m.text
+            );
+            if (existing) {
+              // Update the existing row with the latest text / externalId
+              const patch: Record<string, unknown> = { externalId: m.externalId };
+              if (m.text.length >= (existing.text?.length || 0)) patch.text = m.text;
+              if (m.thinking) patch.thinking = m.thinking;
+              if (m.toolSteps && m.toolSteps.length > 0) patch.toolSteps = m.toolSteps;
+              await msgRepo.update(
+                existing._id,
+                patch as unknown as Parameters<typeof msgRepo.update>[1]
+              );
+              // Update the row in recentAssistants so subsequent candidates
+              // can also match against it with the new text.
+              existing.text = m.text.length >= (existing.text?.length || 0) ? m.text : existing.text;
+              existing.externalId = m.externalId!;
+              synced++;
+              continue;
+            }
+          }
+          actualInserts.push(m);
+        }
+
+        if (actualInserts.length) {
+          await msgRepo.save(
+            actualInserts.map((m) =>
+              msgRepo.create({
+                conversationId: convId,
+                externalId: m.externalId,
+                text: m.text,
+                thinking: m.thinking || null,
+                toolSteps: m.toolSteps && m.toolSteps.length > 0 ? m.toolSteps : null,
+                files: [],
+                role: m.role as 'user' | 'assistant',
+                createdBy: req.user!._id,
+                createdAt: m.timestamp ? new Date(m.timestamp) : new Date(),
+              })
+            )
+          );
+          synced += actualInserts.length;
+        }
       }
 
       /* Refresh already-linked assistant rows against the current JSONL.
